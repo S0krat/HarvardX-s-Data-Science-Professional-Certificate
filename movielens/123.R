@@ -29,7 +29,6 @@ corrs <- sapply(1:nrow(genius), function(i) {
 })
 corrs = data.frame(userId=genius$userId,corr=corrs)
 corrs = corrs[corrs$corr > 0,]
-# corrs$corr = exp(corrs$corr * 2) - 1
 corrs$corr <- corrs$corr / sum(corrs$corr)
 
 genius_other <- biased_edx %>%
