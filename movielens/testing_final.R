@@ -2,8 +2,14 @@ library(readr)
 library(caret)
 library(tidyverse)
 
-val_set <- read_rds("movielens/validate_set.Rds")
+val_set <- read_rds("movielens/test_set.Rds")
 val_set <- select(val_set, userId, movieId, rating)
+
+movie_corr <- read_rds("movielens/movie_corr.Rds")
+movie_corr <- pivot_longer(movie_corr, cols=-movieId, names_to="movieId2", values_to = "corr")
+movie_corr <- movie_corr %>% mutate(movieId2 = as.numeric(movieId2))
+
+movie_corr <- filter(movie_corr, abs(corr) > 0.05)
 
 set.seed(10)
 
@@ -25,9 +31,7 @@ RMSE <- function(a, b) {
 }
 
 train_val_biased <- train_val %>%
-  group_by(userId) %>%
-  filter(n() > 20) %>%
-  ungroup() %>%
+  filter(movieId %in% movie_corr$movieId) %>%
   left_join(fit_movies, by="movieId") %>%
   left_join(fit_users, by="userId") %>%
   mutate(user_bias=rating-b_u-b_i) %>%
@@ -39,13 +43,13 @@ biased_train_set <- biased_train_set %>%
   filter(n() > 300) %>%
   ungroup()
 
-test_val <- mutate(test_val, bias=0)
+test_val <- mutate(test_val, m_bias=0, u_bias=0)
 
 i <- 1
 
 val_users <- unique(train_val_biased$userId)
 isss <- length(val_users)
-id=10
+
 for (id in val_users) {
   print(i/isss)
   i <<- i + 1
@@ -53,6 +57,7 @@ for (id in val_users) {
   tt <- filter(train_val_biased, userId==id) %>%
     select(movieId, user_bias) %>%
     rename("bias"="user_bias")
+  
   train_movies <- filter(train_val, userId==id) %>% .$movieId
   test_movies <- filter(test_val, userId==id) %>% .$movieId
   n_movies <- length(train_movies)
@@ -63,6 +68,7 @@ for (id in val_users) {
     filter(n() > 10) %>%
     left_join(tt, by="movieId") %>%
     summarise(corr=sum(user_bias * bias)) %>%
+    filter(!is.na(corr)) %>%
     mutate(corr=corr/sum(abs(corr)))
   
   genius_other <- biased_train_set %>%
@@ -71,27 +77,33 @@ for (id in val_users) {
     group_by(movieId) %>%
     summarise(rec_bias=sum(user_bias * corr))
   
+  movie_corr_temp <- filter(movie_corr, movieId2%in%test_movies)
+  
+  tt <- inner_join(tt, movie_corr_temp, by="movieId") %>%
+    group_by(movieId2) %>%
+    summarise(bias=sum(bias * corr) / sum(abs(corr))) %>%
+    rename("movieId"="movieId2")
+  
   ids <- which(test_val$userId==id)
-  test_val$bias[ids] <- genius_other$rec_bias
+  test_val$m_bias[ids] <- test_val[ids, 2] %>%
+    left_join(tt, by="movieId") %>%
+    .$bias
+  test_val$u_bias[ids] <- genius_other$rec_bias
 }
 
-# test_val <- filter(test_val, bias != 0)
+alpha <- 0.64
+beta <- 1.71
+
+test_val <- filter(test_val, m_bias != 0)
 test_val <- test_val %>% 
   left_join(fit_movies, by="movieId") %>% 
   left_join(fit_users, by="userId") %>%
-  mutate(predict=b_u+b_i) %>%
-  select(rating, bias, predict)
+  mutate(predict=b_u+b_i) 
 
-write_rds(test_val, "~/HarvardX-s-Data-Science-Professional-Certificate/movielens/test_val2.Rds")
 
-alpha <- seq(0, 5, 0.1)
-rmses <- sapply(alpha, function(a) {
-  test_val %>% filter(!is.na(bias)) %>%
-    mutate(final=predict+a*bias) %>%
-    summarise(rmse=RMSE(rating, final)) %>%
-    .$rmse
-})
+test_val %>%
+  mutate(predict=predict+alpha*m_bias+beta*u_bias) %>%
+  summarise(rmse=RMSE(predict, rating)) %>%
+  .$rmse
 
-alpha[which.min(rmses)] # 4.2
-min(rmses) # 0.818
-plot(alpha, rmses)
+# 0.7864571
